@@ -1,5 +1,6 @@
 #lang plai-typed
 
+;;;;;;;;;;;;;; TIPOS ;;;;;;;;;;;;;;;
 (define-type ExprC
              [numC  (n : number)]
              [idC   (s : symbol)]
@@ -21,17 +22,16 @@
 (define-type FunDefC
              [fdC (name : symbol) (arg : symbol) (body : ExprC)])
 
-(define (desugar [as : ExprS]) : ExprC
-  (type-case ExprS as
-			 [numS    (n)   (numC n)]
-             [idS     (s)   (idC s)]
-             [appS    (fun arg) (appC fun (desugar arg))]
-			 [plusS   (l r) (plusC (desugar l) (desugar r))]
-			 [bminusS (l r) (plusC (desugar l) (multC (numC -1) (desugar r)))]
-			 [uminusS (e)   (multC (numC -1) (desugar e))]
-			 [multS   (l r) (multC (desugar l) (desugar r))]
-			 [ifS     (c s n) (ifC (desugar c) (desugar s) (desugar n))]))
+(define-type Binding
+    [bind (name : symbol) (val : number)])
 
+(define-type-alias Env (listof Binding))
+
+(define mt-env empty)
+
+(define extend-env cons)
+
+;;;;;;;;;;;;;; PARSER ;;;;;;;;;;;;;;;
 (define (parse [s : s-expression]) : ExprS 
   (cond
 	[(s-exp-number? s) (numS (s-exp->number s))]
@@ -48,27 +48,39 @@
 		 [else (error 'parse "invalid_list_input")]))]
 	[else (error 'parse "invalid_input")]))
 
-(define (interp [a : ExprC] [fds : (listof FunDefC)]) : number
+(define (desugar [as : ExprS]) : ExprC
+  (type-case ExprS as
+			 [numS    (n)   (numC n)]
+             [idS     (s)   (idC s)]
+             [appS    (fun arg) (appC fun (desugar arg))]
+			 [plusS   (l r) (plusC (desugar l) (desugar r))]
+			 [bminusS (l r) (plusC (desugar l) (multC (numC -1) (desugar r)))]
+			 [uminusS (e)   (multC (numC -1) (desugar e))]
+			 [multS   (l r) (multC (desugar l) (desugar r))]
+			 [ifS     (c s n) (ifC (desugar c) (desugar s) (desugar n))]))
+
+;;;;;;;;;;;;;; INTERPRETER ;;;;;;;;;;;;;;;
+(define (interp [a : ExprC] [env : Env] [fds : (listof FunDefC)]) : number
   (type-case ExprC a
 			 [numC (n) n]
              [appC (f a) (local ([define fd (get-fundef f fds)])
-                                (interp (subst a (fdC-arg fd) (fdC-body fd)) fds))]
-             [idC   (_)   (error 'interp "Nao devem haver idC")]
-			 [plusC (l r) (+ (interp l fds) (interp r fds))]
-			 [multC (l r) (* (interp l fds) (interp r fds))]
-			 [ifC (c s n) (if (zero? (interp c fds)) (interp n fds) (interp s fds))]))
+                            (interp (fdC-body fd)
+                                    (extend-env
+                                        (bind (fdC-arg fd) (interp a env fds)) env)
+                                    fds))]
+             [idC   (n)  (lookup n env)]
+			 [plusC (l r) (+ (interp l env fds) (interp r env fds))]
+			 [multC (l r) (* (interp l env fds) (interp r env fds))]
+			 [ifC (c s n) (if (zero? (interp c env fds)) (interp n env fds) (interp s env fds))]))
 
-
-(define (subst [new : ExprC] [old : symbol] [e : ExprC]) : ExprC
-  (type-case ExprC e
-             [numC    (n) e]
-             [idC     (s) (cond
-                            [(symbol=? s old) new]
-                            [else e])]
-             [appC  (f a) (appC f (subst new old a))]
-             [plusC (l r) (plusC (subst new old l) (subst new old r))]
-             [multC (l r) (multC (subst new old l) (subst new old r))] 
-             [ifC (c s n) (ifC (subst new old c) (subst new old s) (subst new old n))]))
+;;;;;;;;;;;;;; FUNCTIONS ;;;;;;;;;;;;;;;
+(define (lookup [for : symbol] [env : Env]) : number
+    (cond
+        [(empty? env) (error 'lookup "name not found")]
+        [else (cond
+                [(symbol=? for (bind-name (first env)))
+                    (bind-val (first env))]
+                [else (lookup for (rest env))])]))
 
 (define (get-fundef [name : symbol] [fds : (listof FunDefC)]) : FunDefC
   (cond
@@ -77,17 +89,18 @@
                     [(equal? name (fdC-name (first fds))) (first fds)]
                     [else (get-fundef name (rest fds))])]))
 
+;;;;;;;;;;;;;; TESTS ;;;;;;;;;;;;;;;
 ;Soma somente dois numeros
-(test (interp (desugar (parse '(+ 2 3 5))) (list)) 5)
+(test (interp (desugar (parse '(+ 2 3 5))) (list) (list)) 5)
 
 ;Testa operações
-(test (interp (desugar (parse '(+ 3 7))) (list)) 10)
-(test (interp (desugar (parse '(- 3 7))) (list)) -4)
-(test (interp (desugar (parse '(* 3 7))) (list)) 21)
-(test (interp (desugar (parse '(* (+ 3 3) (- 7 2)))) (list)) 30)
-(test (interp (desugar (parse '(- 2))) (list)) -2)
-(test (interp (desugar (parse '(if (- 2 2) 1 0))) (list)) 0)
-(test (interp (desugar (parse '(if (- 2 3) 1 0))) (list)) 1)
+(test (interp (desugar (parse '(+ 3 7))) (list) (list)) 10)
+(test (interp (desugar (parse '(- 3 7))) (list) (list)) -4)
+(test (interp (desugar (parse '(* 3 7))) (list) (list)) 21)
+(test (interp (desugar (parse '(* (+ 3 3) (- 7 2)))) (list) (list)) 30)
+(test (interp (desugar (parse '(- 2))) (list) (list)) -2)
+(test (interp (desugar (parse '(if (- 2 2) 1 0))) (list) (list)) 0)
+(test (interp (desugar (parse '(if (- 2 3) 1 0))) (list) (list)) 1)
 
 ;Testa parser
 (test (parse '(+ 2 3)) (plusS (numS 2) (numS 3)))
@@ -98,5 +111,6 @@
         [fdC 'dobro 'x (plusC (idC 'x) (idC 'x))]
         [fdC 'quadrado 'y (multC (idC 'y) (idC 'y))]))
 
-(test (interp (desugar (parse '(call dobro 7))) testList) 14)
-(test (interp (desugar (parse '(+ (call quadrado 7) (call dobro 7)))) testList) 63)
+(test (interp (desugar (parse '(call dobro 7))) (list) testList) 14)
+(test (interp (desugar (parse '(+ (call quadrado 7) (call dobro 7)))) (list) testList) 63)
+(test (interp (desugar (parse '(call quadrado (call quadrado (call dobro 1))))) (list) testList) 16)
