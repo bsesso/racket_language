@@ -8,7 +8,11 @@
              [multC (l : ExprC) (r : ExprC)]
              [lamC  (arg : symbol) (body : ExprC)]
              [appC  (fun : ExprC) (arg : ExprC)]
-             [ifC   (c : ExprC) (s : ExprC) (n : ExprC)])
+             [ifC   (c : ExprC) (s : ExprC) (n : ExprC)]
+             [boxC  (arg : ExprC)]
+             [unboxC(arg : ExprC)]
+             [setboxC(b  : ExprC) (v : ExprC)]
+             [seqC  (b1 : ExprC) (b2 : ExprC)])
 
 (define-type ExprS
              [numS  (n : number)]
@@ -19,10 +23,14 @@
              [bminusS (l : ExprS) (r : ExprS)]
              [uminusS (e : ExprS)]
              [multS (l : ExprS) (r : ExprS)]
-             [ifS   (c : ExprS) (s : ExprS) (n : ExprS)])
+             [ifS   (c : ExprS) (s : ExprS) (n : ExprS)]
+             [boxS  (arg : ExprS)]
+             [unboxS(arg : ExprS)]
+             [setboxS(b  : ExprS) (v : ExprS)]
+             [seqS  (b1 : ExprS) (b2 : ExprS)])
 
 (define-type Binding
-    [bind (name : symbol) (val : Value)])
+    [bind (name : symbol) (val : Location)])
 
 (define-type-alias Env (listof Binding))
 
@@ -32,7 +40,22 @@
 
 (define-type Value
     [numV  (n : number)]
-    [closV (arg : symbol) (body : ExprC) (env : Env)])
+    [closV (arg : symbol) (body : ExprC) (env : Env)]
+    [boxV  (l : Location)])
+
+(define-type-alias Location number)
+
+(define-type Storage
+             [cell (location : Location) (val : Value)])
+
+(define-type-alias Store (listof Storage))
+
+(define-type Result
+             [v*s (v : Value) (s : Store)])
+
+(define mt-store empty)
+
+(define override-store cons)
 
 (define (num+ [l : Value] [r : Value]) : Value
     (cond
@@ -61,6 +84,10 @@
 		 [(if) (ifS (parse (second sl)) (parse (third sl)) (parse (fourth sl)))]
          [(call) (appS (parse (second sl)) (parse (third sl)))]
          [(func) (lamS (s-exp->symbol (second sl)) (parse (third sl)))]
+         [(-#) (boxS (parse (second sl)))]
+         [(>#) (unboxS (parse (second sl)))]
+         [(!#) (setboxS (parse (second sl)) (parse (third sl)))]
+         [(seq) (seqS (parse (second sl)) (parse (third sl)))]
 		 [else (error 'parse "invalid_list_input")]))]
 	[else (error 'parse "invalid_input")]))
 
@@ -74,50 +101,100 @@
 			 [bminusS (l r) (plusC (desugar l) (multC (numC -1) (desugar r)))]
 			 [uminusS (e)   (multC (numC -1) (desugar e))]
 			 [multS   (l r) (multC (desugar l) (desugar r))]
-			 [ifS     (c s n) (ifC (desugar c) (desugar s) (desugar n))]))
+			 [ifS     (c s n) (ifC (desugar c) (desugar s) (desugar n))]
+             [boxS    (a)   (boxC (desugar a))]
+             [unboxS  (a)   (unboxC (desugar a))]
+             [setboxS (b v) (setboxC (desugar b) (desugar v))]
+             [seqS    (b1 b2) (seqC (desugar b1) (desugar b2))]))
 
 ;;;;;;;;;;;;;; INTERPRETER ;;;;;;;;;;;;;;;
-(define (interp [a : ExprC] [env : Env]): Value
+(define (interp [a : ExprC] [env : Env] [sto : Store]): Result
   (type-case ExprC a
-			 [numC (n) (numV n)]
-             [appC (f a) (local ([define f-value (interp f env)])
-                            (interp (closV-body f-value)
-                                    (extend-env
-                                        (bind (closV-arg f-value) (interp a env)) (closV-env f-value))))]
-             [idC   (n)  (lookup n env)]
-             [lamC  (a b) (closV a b env)]
-			 [plusC (l r) (num+ (interp l env) (interp r env))]
-			 [multC (l r) (num* (interp l env) (interp r env))]
-			 [ifC (c s n) (if (zero? (numV-n (interp c env))) (interp n env) (interp s env))]))
+			 [numC (n) (v*s (numV n) sto)]
+             [appC (f a) (let ([res-f (interp f env sto)])
+                           (let ([res-a (interp a env (v*s-s res-f))]
+                                 [new (new-loc)])
+                              (interp (closV-body (v*s-v res-f))
+                                   (extend-env (bind (closV-arg (v*s-v res-f)) new)
+                                               (closV-env (v*s-v res-f)))
+                                   (override-store (cell new (v*s-v res-a)) (v*s-s res-a)))))]
+             [idC   (n)  (v*s (fetch (lookup n env) sto) sto)]
+             [lamC  (a b) (v*s (closV a b env) sto)]
+			 [plusC (l r) (let ([res-l (interp l env sto)])
+                                (let ([res-r (interp r env (v*s-s res-l))])
+                                    (v*s (num+ (v*s-v res-l) (v*s-v res-r)) (v*s-s res-r))))]
+			 [multC (l r) (let ([res-l (interp l env sto)])
+                                (let ([res-r (interp r env (v*s-s res-l))])
+                                    (v*s (num* (v*s-v res-l) (v*s-v res-r)) (v*s-s res-r))))]
+ 
+			 [ifC (c s n) (let ([res-c (interp c env sto)])
+                            (if (zero? (numV-n (v*s-v res-c)))
+                              (interp n env (v*s-s res-c))
+                              (interp s env (v*s-s res-c))))]
+             [boxC   (a)  (let ([res (interp a env sto)] [onde (new-loc)])
+                            (v*s (boxV onde)
+                                 (override-store (cell onde (v*s-v res)) (v*s-s res))))]
+             [unboxC (a)  (let ([res (interp a env sto)])
+                            (v*s (fetch (boxV-l (v*s-v res)) (v*s-s res)) (v*s-s res)))]
+             [setboxC (a v)(let ([res-a (interp a env sto)]) 
+                                 (let ([res-v (interp v env (v*s-s res-a))])
+                                     (v*s (v*s-v res-v)
+                                          (override-store (cell (boxV-l (v*s-v res-a)) (v*s-v res-v)) (v*s-s res-v)))))]
+             [seqC (b1 b2) (let ([s-b1 (v*s-s (interp b1 env sto))])
+                             (interp b2 env s-b1))]))
 
 ;;;;;;;;;;;;;; FUNCTIONS ;;;;;;;;;;;;;;;
-(define (lookup [for : symbol] [env : Env]) : Value
+(define (lookup [for : symbol] [env : Env]) : Location 
     (cond
-        [(empty? env) (error 'lookup "name not found")]
+        [(empty? env) (error 'lookup (string-append (string-append "name \'" (symbol->string for)) "\' not found"))]
         [else (cond
                 [(symbol=? for (bind-name (first env)))
                     (bind-val (first env))]
                 [else (lookup for (rest env))])]))
 
+(define (fetch [loc : Location] [sto : Store]) : Value
+  (cond
+    [(empty? sto) (error 'fetch "Location not found")]
+    [else (cond
+            [(= loc (cell-location (first sto)))
+                (cell-val (first sto))]
+            [else (fetch loc (rest sto))])]))
+
+(define new-loc
+  (let ([n (box 0)])
+    (lambda ()
+      (begin
+        (set-box! n (+ 1 (unbox n)))
+        (unbox n)))))
+
+
+;;;;;;;;;;;;;; FACILITADOR ;;;;;;;;;;;;;;; 
+(define (interpS [s : s-expression]) (interp (desugar (parse s)) mt-env mt-store))
+(define (testS   [s : s-expression] [e : Value]) (test (v*s-v (interpS s)) e))
+
 ;;;;;;;;;;;;;; TESTS ;;;;;;;;;;;;;;;
 ;Soma somente dois numeros
-(test (interp (desugar (parse '(+ 2 3 5))) (list)) (numV 5))
+(testS '(+ 2 3 5) (numV 5))
 
 ;Testa operações
-(test (interp (desugar (parse '(+ 3 7))) (list)) (numV 10))
-(test (interp (desugar (parse '(- 3 7))) (list)) (numV -4))
-(test (interp (desugar (parse '(* 3 7))) (list)) (numV 21))
-(test (interp (desugar (parse '(* (+ 3 3) (- 7 2)))) (list)) (numV 30))
-(test (interp (desugar (parse '(- 2))) (list)) (numV -2))
-(test (interp (desugar (parse '(if (- 2 2) 1 0))) (list)) (numV 0))
-(test (interp (desugar (parse '(if (- 2 3) 1 0))) (list)) (numV 1))
+(testS '(+ 3 7) (numV 10))
+(testS '(- 3 7) (numV -4))
+(testS '(* 3 7) (numV 21))
+(testS '(* (+ 3 3) (- 7 2)) (numV 30))
+(testS '(- 2) (numV -2))
+(testS '(if (- 2 2) 1 0) (numV 0))
+(testS '(if (- 2 3) 1 0) (numV 1))
 
 ;Testa parser
 (test (parse '(+ 2 3)) (plusS (numS 2) (numS 3)))
 
 ;Testa funções
-(test (interp (desugar (parse '(call [func x (+ x x)] 7))) (list)) (numV 14))
-(test (interp (desugar (parse '(+ (call [func x (* x x)] 7) (call [func x (+ x x)] 7)))) (list)) (numV 63))
-(test (interp (desugar (parse '(call [func x (* x x)] (call [func x (* x x)] (call [func x (+ x x)] 1))))) (list)) (numV 16))
-(test (interp (desugar (parse '(call [func x (+ 2 (call [func x (+ x x)] (* 2 x)))] 2))) (list)) (numV 10))
-(test (interp (desugar (parse '(call [func x (call [func y x] 2)] 3))) (list)) (numV 3)) 
+(testS '(call [func x (+ x x)] 7) (numV 14))
+(testS '(+ (call [func x (* x x)] 7) (call [func x (+ x x)] 7)) (numV 63))
+(testS '(call [func x (* x x)] (call [func x (* x x)] (call [func x (+ x x)] 1))) (numV 16))
+(testS '(call [func x (+ 2 (call [func x (+ x x)] (* 2 x)))] 2) (numV 10))
+(testS '(call [func x (call [func y x] 2)] 3) (numV 3)) 
+
+;Testa box
+(testS '(seq (!# (-# 3) (+ 3 3)) (># (-# 3))) (numV 3))
+(testS '(seq (!# (-# 2) 32) (># (-# 2) (+ (># (-# 2)) 10))) (numV 2))
