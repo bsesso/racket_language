@@ -4,7 +4,6 @@
 (define-type ExprC
              [numC  (n : number)]
              [varC  (s : symbol)]
-             [defC  (s : symbol)]
              [plusC (l : ExprC) (r : ExprC)]
              [multC (l : ExprC) (r : ExprC)]
              [lamC  (arg : symbol) (body : ExprC)]
@@ -15,7 +14,7 @@
 
 (define-type ExprS
              [numS  (n : number)]
-             [defS  (s : symbol)]
+             [defS  (s : symbol) (v : ExprS) (body : ExprS)]
              [varS  (s : symbol)]
              [lamS  (arg : symbol) (body : ExprS)]
              [appS  (fun : ExprS) (arg : ExprS)]
@@ -81,7 +80,7 @@
 		 [(if) (ifS (parse (second sl)) (parse (third sl)) (parse (fourth sl)))]
          [(call) (appS (parse (second sl)) (parse (third sl)))]
          [(func) (lamS (s-exp->symbol (second sl)) (parse (third sl)))]
-         [(def) (defS (s-exp->symbol (second sl)))]
+         [(def) (defS (s-exp->symbol (second sl)) (parse (third sl)) (parse (fourth sl)))]
          [(set) (setS (s-exp->symbol (second sl)) (parse (third sl)))]
          [(seq) (seqS (parse (second sl)) (parse (third sl)))]
 		 [else (error 'parse "invalid_list_input")]))]
@@ -92,7 +91,7 @@
 			 [numS    (n)   (numC n)]
              [appS    (fun arg) (appC (desugar fun) (desugar arg))]
              [varS    (v)   (varC v)]
-             [defS    (v)   (defC v)]
+             [defS    (s v b) (appC (lamC s (desugar b)) (desugar v))]
              [lamS    (a b) (lamC a (desugar b))]
 			 [plusS   (l r) (plusC (desugar l) (desugar r))]
 			 [bminusS (l r) (plusC (desugar l) (multC (numC -1) (desugar r)))]
@@ -126,11 +125,6 @@
                             (if (zero? (numV-n (v*s-v res-c)))
                               (interp n env (v*s-s res-c))
                               (interp s env (v*s-s res-c))))]
-             [defC (v)    (let ([newl (new-loc)])
-                            (begin
-                              (extend-env (bind v newl) env)
-                              (override-store (cell newl (numV 0)) sto)
-                              (v*s (numV 0) sto)))]
              [setC (v a)  (let ([res-a (interp a env sto)]
                                 [loc (lookup v env)])
                             (v*s (v*s-v res-a)
@@ -192,4 +186,4 @@
 (testS '(call [func x (call [func y x] 2)] 3) (numV 3)) 
 
 ;Testa var
-(interpS '(seq (def x) (seq (set x 10) x)))
+(interpS '(def x 10 (seq (set x 2) (* 2 x))))
