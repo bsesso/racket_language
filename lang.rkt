@@ -186,4 +186,5 @@
 (testS '(call [func x (call [func y x] 2)] 3) (numV 3)) 
 
 ;Testa var
-(interpS '(def x 10 (seq (set x 2) (* 2 x))))
+(testS '(def x 10 (seq (set x 2) (* 2 x))) (numV 4))
+(testS '(def x (func z (+ z z)) (call x 3)) (numV 6))
